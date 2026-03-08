@@ -160,7 +160,7 @@
     }
 
     /* =========================================
-       DASHBOARD - ULTRA COMPACT (UNCHANGED)
+       DASHBOARD - ULTRA COMPACT
        ========================================= */
     .container { max-width: 100%; margin: 0 auto; padding: 10px; display: none; animation: slideIn 0.5s ease-out; }
     
@@ -264,7 +264,6 @@
             <!-- BUY NOW RESELLER OPTION -->
             <div class="promo-section">
                 <p>Want to start your own business?</p>
-                <!-- REPLACE "YourTelegramUsername" WITH YOUR ACTUAL TELEGRAM ID -->
                 <a href="https://t.me/Bunnyownerr" target="_blank" class="btn-buy">
                     <i class="fab fa-telegram-plane"></i> BUY RESELLER PANEL
                 </a>
@@ -291,7 +290,7 @@
             <div class="card">
                 <h3><i class="fas fa-user-astronaut"></i> Generate User</h3>
                 <div class="info-tag">
-                    <i class="fas fa-bolt" style="color: #ffdc00;"></i> Cost: 1 Credit1 user
+                    <i class="fas fa-bolt" style="color: #ffdc00;"></i> Cost: 1 Credit / 1 User <span style="color:#aaa; margin-left:5px;">| Max Devices: <span id="rMaxDevsDisplay">1</span></span>
                 </div>
                 
                 <input type="text" class="panel-input" id="newUid" placeholder="New Username" autocomplete="off">
@@ -337,7 +336,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
     <script>
-        // 1. CONFIG (KEEP YOUR FIREBASE KEYS THE SAME AS ADMIN PANEL)
+        // 1. CONFIG
         const firebaseConfig = {
             apiKey: "AIzaSyAsGDwP2aacJ5OoAYqgDM8EMPB4jPxrfkk",
             authDomain: "bunny-7ab09.firebaseapp.com",
@@ -348,6 +347,17 @@
         const db = firebase.database();
 
         let loggedInReseller = "";
+        let loggedInResellerMaxDevices = 1; // Used to inherit admin's device setting
+
+        // Helper function to safely escape HTML formatting inside the table
+        function escapeHtml(unsafe) {
+            return String(unsafe || '')
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
 
         // --- LOGIN LOGIC ---
         function loginReseller() {
@@ -355,6 +365,12 @@
             const pass = document.getElementById("rPass").value.trim();
 
             if(!user || !pass) return alert("Enter credentials!");
+
+            // Prevent path errors if random symbols are typed
+            const invalidChars = /[.$#\[\]\/]/;
+            if (invalidChars.test(user)) {
+                return alert("Invalid Reseller ID Format!");
+            }
 
             db.ref("resellers/" + user).once("value").then(snapshot => {
                 if(snapshot.exists()) {
@@ -380,8 +396,11 @@
             db.ref("resellers/" + loggedInReseller).on("value", snapshot => {
                 const data = snapshot.val();
                 if(data) {
-                    // 1. Update Credits
+                    // 1. Update Credits & Max Devices (Inherited from Admin Panel setup)
                     document.getElementById("myCredits").innerText = data.credits || 0;
+                    
+                    loggedInResellerMaxDevices = data.max_devices || 1;
+                    document.getElementById("rMaxDevsDisplay").innerText = loggedInResellerMaxDevices;
 
                     // 2. Update Allowed Plans Dropdown
                     const planSelect = document.getElementById("newPlan");
@@ -423,12 +442,17 @@
                     else if(u.expiry < now) statusHtml = '<span class="badge bg-red">Expired</span>';
 
                     const dateStr = new Date(u.expiry).toLocaleDateString();
+                    
+                    // Prevent table breaking characters
+                    const safeUid = escapeHtml(uid);
+                    const safePass = escapeHtml(u.password);
+                    const safePlan = escapeHtml(u.plan);
 
                     const tr = document.createElement("tr");
                     tr.innerHTML = `
-                        <td style="font-weight:bold; color:var(--secondary);">${uid}</td>
-                        <td style="font-family:monospace; color:#aaa; font-size:10px;">${u.password}</td>
-                        <td style="font-weight:600;">${u.plan}</td>
+                        <td style="font-weight:bold; color:var(--secondary);">${safeUid}</td>
+                        <td style="font-family:monospace; color:#aaa; font-size:10px;">${safePass}</td>
+                        <td style="font-weight:600;">${safePlan}</td>
                         <td><i class="far fa-calendar-alt" style="margin-right:2px; color:#888;"></i> ${dateStr}</td>
                         <td>${statusHtml}</td>
                     `;
@@ -479,7 +503,7 @@
                         password: pass,
                         plan: plan,
                         expiry: expiryTime,
-                        device_limit: 1, // Default to 1 device for reseller users
+                        device_limit: loggedInResellerMaxDevices, // <-- FIX APPLIED HERE!
                         created_by: loggedInReseller,
                         created_at: Date.now()
                     }).then(() => {
