@@ -349,7 +349,13 @@
         const db = firebase.database();
 
         let loggedInReseller = "";
-        let currentSessionId = ""; // To track panel login session
+
+        // 🚀 NAYA LOGIC: Har device ki apni ek Permanent ID banegi
+        let myDeviceID = localStorage.getItem("bunny_reseller_device");
+        if (!myDeviceID) {
+            myDeviceID = "DEV_" + Math.random().toString(36).substr(2, 10);
+            localStorage.setItem("bunny_reseller_device", myDeviceID);
+        }
 
         // Helper function to safely escape HTML formatting inside the table
         function escapeHtml(unsafe) {
@@ -361,7 +367,7 @@
                  .replace(/'/g, "&#039;");
         }
 
-        // --- MULTI-LOGIN RESTRICTION & LOGIN LOGIC ---
+        // --- MULTI-LOGIN RESTRICTION & LOGIN LOGIC (FIXED) ---
         function loginReseller() {
             const user = document.getElementById("rUser").value.trim();
             const pass = document.getElementById("rPass").value.trim();
@@ -379,37 +385,33 @@
                     const data = snapshot.val();
                     if(data.password === pass) {
                         
-                        // NEW LOGIC: Check Reseller Login Limit limits
-                        const loginLimit = data.panel_login_limit || 1; // Default to 1 if not set by Admin
-                        const sessionsRef = db.ref("resellers/" + user + "/active_sessions");
+                        // 1. Admin ne kitni limit di hai wo check karo (Default 1)
+                        const loginLimit = data.panel_login_limit || 1; 
+                        let activeDevices = data.logged_in_devices || {};
+                        let activeCount = Object.keys(activeDevices).length;
 
-                        sessionsRef.once("value").then(sessSnapshot => {
-                            let activeCount = 0;
-                            if(sessSnapshot.exists()) {
-                                activeCount = Object.keys(sessSnapshot.val()).length;
+                        // 2. Check karo ki kya hamara Device ID pehle se list mein hai?
+                        let isMyDeviceSaved = activeDevices.hasOwnProperty(myDeviceID);
+
+                        if (!isMyDeviceSaved) {
+                            // Agar device list mein nahi hai, toh check karo limit cross toh nahi hui?
+                            if (activeCount >= loginLimit) {
+                                alert(`❌ Access Denied!\nMaximum ${loginLimit} device(s) can login to this Panel at the same time.\n\nPlease ask Admin to Reset your Reseller Devices.`);
+                                return; // Login yahin block ho jayega
+                            } else {
+                                // Agar slot khali hai, toh is device ko Firebase mein save kar do
+                                activeDevices[myDeviceID] = true;
+                                db.ref("resellers/" + user + "/logged_in_devices").set(activeDevices);
                             }
+                        }
 
-                            if(activeCount >= loginLimit) {
-                                alert(`❌ Access Denied: Maximum Panel Logins Reached (${activeCount}/${loginLimit}).\n\nPlease logout from other devices first.`);
-                                return; // Block login
-                            }
-
-                            // If slot available -> Log them in!
-                            currentSessionId = "sess_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
-                            
-                            // 1. Add session ID to DB
-                            sessionsRef.child(currentSessionId).set(true);
-                            
-                            // 2. IMPORTANT: Delete session automatically when browser is closed or refreshed
-                            sessionsRef.child(currentSessionId).onDisconnect().remove();
-
-                            loggedInReseller = user;
-                            document.getElementById("loginOverlay").style.display = "none";
-                            document.getElementById("resellerPanel").style.display = "block";
-                            
-                            loadResellerData();
-                            loadMyUsers();
-                        });
+                        // 3. Login Success - Dashboard open karo
+                        loggedInReseller = user;
+                        document.getElementById("loginOverlay").style.display = "none";
+                        document.getElementById("resellerPanel").style.display = "block";
+                        
+                        loadResellerData();
+                        loadMyUsers();
 
                     } else {
                         alert("Invalid Password!");
@@ -420,11 +422,11 @@
             }).catch(err => alert("Error: " + err.message));
         }
 
-        // --- PROPER LOGOUT TO CLEAR SESSION ---
+        // --- PROPER LOGOUT (Device list se naam hatane ke liye) ---
         function logoutReseller() {
-            if(loggedInReseller && currentSessionId) {
-                // Manually delete session from Firebase then reload page
-                db.ref("resellers/" + loggedInReseller + "/active_sessions/" + currentSessionId)
+            if(loggedInReseller && myDeviceID) {
+                // Logout karte waqt Firebase se apni device id hata do taki jagah khali ho jaye
+                db.ref("resellers/" + loggedInReseller + "/logged_in_devices/" + myDeviceID)
                   .remove()
                   .then(() => {
                       location.reload();
@@ -463,6 +465,7 @@
             });
         }
 
+        // --- LOAD MY USERS ---
         function loadMyUsers() {
             // Query Firebase to only show users created by THIS reseller
             db.ref("users").orderByChild("created_by").equalTo(loggedInReseller).on("value", snapshot => {
