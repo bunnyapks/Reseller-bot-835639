@@ -17,7 +17,8 @@
         --panel-bg: rgba(15, 15, 25, 0.65);
         --text: #ffffff;
         --success: #05ffa1; 
-        --danger: #ff2a6d; 
+        --danger: #ff2a6d;
+        --warning: #ffdc00; 
         --glass-border: rgba(255, 255, 255, 0.1);
     }
 
@@ -243,6 +244,7 @@
     .badge { padding: 2px 5px; border-radius: 8px; font-size: 8px; font-weight:700; text-transform: uppercase; }
     .bg-green { background: rgba(5, 255, 161, 0.2); color: var(--success); border: 1px solid var(--success); }
     .bg-red { background: rgba(255, 42, 109, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+    .bg-yellow { background: rgba(255, 220, 0, 0.2); color: var(--warning); border: 1px solid var(--warning); }
 </style>
 </head>
 <body>
@@ -279,7 +281,7 @@
                 <div class="credit-box">
                     <i class="fas fa-coins"></i> Credits: <span id="myCredits" style="color:var(--secondary); margin-left:3px;">0</span>
                 </div>
-                <button class="logout-btn" onclick="location.reload()" title="Logout">
+                <button class="logout-btn" onclick="logoutReseller()" title="Logout">
                     <i class="fas fa-power-off"></i>
                 </button>
             </div>
@@ -290,7 +292,7 @@
             <div class="card">
                 <h3><i class="fas fa-user-astronaut"></i> Generate User</h3>
                 <div class="info-tag">
-                    <i class="fas fa-bolt" style="color: #ffdc00;"></i> Cost: 1 Credit / 1 User <span style="color:#aaa; margin-left:5px;">| Max Devices: <span id="rMaxDevsDisplay">1</span></span>
+                    <i class="fas fa-bolt" style="color: #ffdc00;"></i> Cost: 1 Credit / 1 User <span style="color:#aaa; margin-left:5px;">| Max Devices: 1</span>
                 </div>
                 
                 <input type="text" class="panel-input" id="newUid" placeholder="New Username" autocomplete="off">
@@ -304,7 +306,7 @@
                 <input type="number" class="panel-input" id="newValidity" placeholder="Validity (1-30 Days)" min="1" max="30">
 
                 <button class="btn-panel" onclick="generateUser()">
-                    <i class="fas fa-magic" style="margin-right: 4px;"></i> GENERATE
+                    <i class="fas fa-magic" style="margin-right: 4px;"></i> GENERATE (SEND FOR APPROVAL)
                 </button>
             </div>
 
@@ -347,7 +349,7 @@
         const db = firebase.database();
 
         let loggedInReseller = "";
-        let loggedInResellerMaxDevices = 1; // Used to inherit admin's device setting
+        let currentSessionId = ""; // To track panel login session
 
         // Helper function to safely escape HTML formatting inside the table
         function escapeHtml(unsafe) {
@@ -359,7 +361,7 @@
                  .replace(/'/g, "&#039;");
         }
 
-        // --- LOGIN LOGIC ---
+        // --- MULTI-LOGIN RESTRICTION & LOGIN LOGIC ---
         function loginReseller() {
             const user = document.getElementById("rUser").value.trim();
             const pass = document.getElementById("rPass").value.trim();
@@ -376,12 +378,39 @@
                 if(snapshot.exists()) {
                     const data = snapshot.val();
                     if(data.password === pass) {
-                        loggedInReseller = user;
-                        document.getElementById("loginOverlay").style.display = "none";
-                        document.getElementById("resellerPanel").style.display = "block";
                         
-                        loadResellerData();
-                        loadMyUsers();
+                        // NEW LOGIC: Check Reseller Login Limit limits
+                        const loginLimit = data.panel_login_limit || 1; // Default to 1 if not set by Admin
+                        const sessionsRef = db.ref("resellers/" + user + "/active_sessions");
+
+                        sessionsRef.once("value").then(sessSnapshot => {
+                            let activeCount = 0;
+                            if(sessSnapshot.exists()) {
+                                activeCount = Object.keys(sessSnapshot.val()).length;
+                            }
+
+                            if(activeCount >= loginLimit) {
+                                alert(`❌ Access Denied: Maximum Panel Logins Reached (${activeCount}/${loginLimit}).\n\nPlease logout from other devices first.`);
+                                return; // Block login
+                            }
+
+                            // If slot available -> Log them in!
+                            currentSessionId = "sess_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+                            
+                            // 1. Add session ID to DB
+                            sessionsRef.child(currentSessionId).set(true);
+                            
+                            // 2. IMPORTANT: Delete session automatically when browser is closed or refreshed
+                            sessionsRef.child(currentSessionId).onDisconnect().remove();
+
+                            loggedInReseller = user;
+                            document.getElementById("loginOverlay").style.display = "none";
+                            document.getElementById("resellerPanel").style.display = "block";
+                            
+                            loadResellerData();
+                            loadMyUsers();
+                        });
+
                     } else {
                         alert("Invalid Password!");
                     }
@@ -391,16 +420,29 @@
             }).catch(err => alert("Error: " + err.message));
         }
 
+        // --- PROPER LOGOUT TO CLEAR SESSION ---
+        function logoutReseller() {
+            if(loggedInReseller && currentSessionId) {
+                // Manually delete session from Firebase then reload page
+                db.ref("resellers/" + loggedInReseller + "/active_sessions/" + currentSessionId)
+                  .remove()
+                  .then(() => {
+                      location.reload();
+                  }).catch(() => {
+                      location.reload();
+                  });
+            } else {
+                location.reload();
+            }
+        }
+
         // --- LOAD DASHBOARD DATA & SET PERMISSIONS ---
         function loadResellerData() {
             db.ref("resellers/" + loggedInReseller).on("value", snapshot => {
                 const data = snapshot.val();
                 if(data) {
-                    // 1. Update Credits & Max Devices (Inherited from Admin Panel setup)
+                    // 1. Update Credits
                     document.getElementById("myCredits").innerText = data.credits || 0;
-                    
-                    loggedInResellerMaxDevices = data.max_devices || 1;
-                    document.getElementById("rMaxDevsDisplay").innerText = loggedInResellerMaxDevices;
 
                     // 2. Update Allowed Plans Dropdown
                     const planSelect = document.getElementById("newPlan");
@@ -438,8 +480,17 @@
                     
                     const now = Date.now();
                     let statusHtml = '<span class="badge bg-green">Active</span>';
-                    if(u.banned) statusHtml = '<span class="badge bg-red">Banned</span>';
-                    else if(u.expiry < now) statusHtml = '<span class="badge bg-red">Expired</span>';
+                    
+                    // --- NEW APPROVAL LOGIC CHECK ---
+                    if (u.status === "pending") {
+                        statusHtml = '<span class="badge bg-yellow">Pending Admin</span>';
+                    } else if (u.status === "rejected") {
+                        statusHtml = '<span class="badge bg-red">Rejected</span>';
+                    } else if (u.banned) {
+                        statusHtml = '<span class="badge bg-red">Banned</span>';
+                    } else if (u.expiry < now) {
+                        statusHtml = '<span class="badge bg-red">Expired</span>';
+                    }
 
                     const dateStr = new Date(u.expiry).toLocaleDateString();
                     
@@ -461,7 +512,7 @@
             });
         }
 
-        // --- GENERATE USER (CREDIT DEDUCTION LOGIC) ---
+        // --- GENERATE USER (CREDIT DEDUCTION LOGIC & APPROVAL SYSTEM) ---
         function generateUser() {
             const uid = document.getElementById("newUid").value.trim();
             const pass = document.getElementById("newPass").value.trim();
@@ -496,18 +547,19 @@
                 } else if (!committed) {
                     alert("❌ INSUFFICIENT CREDITS! You need at least 1 credit to generate a user.");
                 } else {
-                    // Credit deducted successfully -> Create the user
+                    // Credit deducted successfully -> Create the user and set status to PENDING
                     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
                     
                     db.ref("users/" + uid).set({
                         password: pass,
                         plan: plan,
                         expiry: expiryTime,
-                        device_limit: loggedInResellerMaxDevices, // <-- FIX APPLIED HERE!
+                        device_limit: 1, // FORCE DEVICE LIMIT STRICTLY TO 1
                         created_by: loggedInReseller,
-                        created_at: Date.now()
+                        created_at: Date.now(),
+                        status: "pending" // <--- ADMIN APPROVAL FLAG ADDED
                     }).then(() => {
-                        alert("✅ USER GENERATED SUCCESSFULLY!\n1 Credit has been deducted.");
+                        alert("✅ USER GENERATED!\n\nStatus: PENDING APPROVAL.\n1 Credit has been deducted (It will be refunded automatically by the Admin if your request is rejected).");
                         document.getElementById("newUid").value = "";
                         document.getElementById("newPass").value = "";
                         document.getElementById("newValidity").value = "";
